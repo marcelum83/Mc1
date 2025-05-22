@@ -15,35 +15,49 @@ from kivy.clock import Clock
 # Import classes from main.py
 from main import MainApp, HomeScreen, DynamicScreen
 
-# It's good practice to ensure Kivy's app is not already running if tests are run multiple times
-# or if there's an issue with teardown. However, direct manipulation of App.get_running_app()
 # can be tricky. For now, we'll rely on each test setting up what it needs.
+from unittest.mock import patch, Mock # Added Mock
 
 class TestAppFunctionality(unittest.TestCase):
 
     def setUp(self):
-        # It's crucial that main.py's "if __name__ == '__main__':" block
-        # prevents app.run() when main.py is imported.
-        # We will create a new app instance for some tests, or test screens in isolation.
-        # Note: Kivy's App is a singleton. Running multiple app instances in tests can be problematic.
-        # For now, we'll try to manage it locally or test components without a full app run where possible.
-        # If App.get_running_app() exists, we should try to stop it.
+        # Stop any previous app instance
         if App.get_running_app():
             App.get_running_app().stop()
+            # Clock.unschedule_all() # Might be needed if Clock events interfere
+
+        # Create a new app instance for each test
+        self.app = MainApp()
         
-        # Create a new app instance for tests that need it.
-        # This is a simplified setup. More complex scenarios might require GraphicUnitTest.
-        self.app = MainApp() # Create an instance
-        self.app.build() # Manually call build to set up the screen manager etc.
-                         # This internally creates self.app.sm (the ScreenManager)
+        # Determine save file path and ensure it's clean before each test
+        self.save_file = self.app.save_file 
+        if os.path.exists(self.save_file):
+            os.remove(self.save_file)
+
+        # Manually call build to set up the screen manager and other essentials.
+        # build() in main.py now calls load_screens(), which is fine for most tests.
+        # For tests that need a completely clean slate before loading, we ensure the file is gone.
+        self.app.build() 
+        
+        # Ensure after build, if save file was deleted, screen_count is also reset
+        # (load_screens might modify it based on the file, but file is gone)
+        self.app.screen_count = 0 
+
 
     def tearDown(self):
-        # Clean up any Kivy app instance if created.
+        # Clean up the save file after each test
+        if os.path.exists(self.save_file):
+            os.remove(self.save_file)
+        
+        # Stop the Kivy app instance
         if App.get_running_app():
             App.get_running_app().stop()
-        # Reset screen_count for subsequent tests if it's modified directly on MainApp class or instance
-        MainApp.screen_count = 0 # Assuming screen_count might be a class variable or reset it on instance
-        self.app.screen_count = 0
+            # Clock.unschedule_all()
+
+        # Reset MainApp class variable if it exists and was modified by tests
+        # This is a bit of a guess, ideally screen_count is instance-based or managed carefully
+        if hasattr(MainApp, 'screen_count'): 
+             MainApp.screen_count = 0
 
 
     def test_app_initialization(self):
@@ -68,6 +82,346 @@ class TestAppFunctionality(unittest.TestCase):
                         break
         self.assertTrue(create_new_screen_button_found, "HomeScreen should contain 'Create New Screen' button.")
         self.assertEqual(self.app.screen_count, 0, "Initial screen_count should be 0.")
+
+    # --- Test Case Group: Save/Load Functionality ---
+
+    def test_save_single_screen_no_widgets(self):
+        home_screen = self.app.sm.get_screen('home')
+        
+        # 1. Create one dynamic screen
+        home_screen.add_new_screen_interactive(None) # Creates DynamicScreen_1
+        screen_name = "DynamicScreen_1"
+        created_screen = self.app.sm.get_screen(screen_name)
+        original_bg_color = list(created_screen.bg_color.rgba) # Store original color
+
+        # 2. Call self.app.save_screens()
+        self.app.save_screens()
+
+        # 3. Assert screens_data.json is created
+        self.assertTrue(os.path.exists(self.save_file), f"{self.save_file} should be created.")
+
+        # 4. Instantiate a new MainApp (or reset the current one) and call load_screens()
+        # Stop the current app to allow a new one to be "fresh"
+        if App.get_running_app():
+            App.get_running_app().stop()
+        
+        new_app = MainApp()
+        # new_app.save_file should be the same as self.save_file
+        new_app.build() # This calls load_screens()
+
+        # 5. Verify the screen is loaded correctly
+        self.assertTrue(new_app.sm.has_screen(screen_name), f"{screen_name} should be loaded in the new app.")
+        loaded_screen = new_app.sm.get_screen(screen_name)
+        self.assertIsInstance(loaded_screen, DynamicScreen, "Loaded screen should be a DynamicScreen instance.")
+        self.assertEqual(list(loaded_screen.bg_color.rgba), original_bg_color, "Loaded screen background color should match original.")
+        self.assertEqual(len(loaded_screen.content_layout.children), 0, "Loaded screen should have no widgets.")
+        
+        # Clean up new_app instance
+        if App.get_running_app(): # This should be new_app
+            App.get_running_app().stop()
+
+    def test_save_load_screen_with_widgets_and_ids(self):
+        home_screen = self.app.sm.get_screen('home')
+        
+        # 1. Create a dynamic screen
+        home_screen.add_new_screen_interactive(None) # Creates DynamicScreen_1
+        screen_name = "DynamicScreen_1"
+        created_screen = self.app.sm.get_screen(screen_name)
+
+        # 2. Add a label and a button to it
+        # To do this programmatically without UI, we need to set widget_text_input on created_screen
+        # and then call add_widget_to_screen
+        created_screen.widget_text_input = TextInput(text="Test Label 1")
+        created_screen.add_widget_to_screen('label') # from_load=False by default
+        
+        created_screen.widget_text_input = TextInput(text="Test Button 1")
+        # For this test, not adding action to button yet, just the widget itself
+        created_screen.action_type_spinner = Spinner(text='None') # Mock spinner for non-action button
+        created_screen.add_widget_to_screen('button')
+
+        self.assertEqual(len(created_screen.content_layout.children), 2, "Screen should have 2 widgets.")
+        
+        # Retrieve widget_ids - widgets are added to content_layout in reverse visual order
+        # Last added (button) is at index 0, first added (label) is at index 1
+        button_widget_id = created_screen.content_layout.children[0].widget_id
+        label_widget_id = created_screen.content_layout.children[1].widget_id
+        self.assertIsNotNone(button_widget_id)
+        self.assertIsNotNone(label_widget_id)
+
+        # 3. Call self.app.save_screens()
+        self.app.save_screens()
+        self.assertTrue(os.path.exists(self.save_file))
+
+        # 4. Load into a new/reset app
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app = MainApp()
+        new_app.build() # Calls load_screens
+
+        # 5. Verify the screen and its widgets are reloaded
+        self.assertTrue(new_app.sm.has_screen(screen_name), f"{screen_name} should be loaded.")
+        loaded_screen = new_app.sm.get_screen(screen_name)
+        self.assertEqual(len(loaded_screen.content_layout.children), 2, "Loaded screen should have 2 widgets.")
+
+        # Widgets are loaded in the order they are in the JSON (visual order)
+        # and added to content_layout (which means visually, first in JSON is top-most)
+        # content_layout.children has them in reverse order of addition/visual.
+        # So, if saved as [Label, Button], loaded as [Label, Button].
+        # content_layout.children[1] is Label, content_layout.children[0] is Button.
+        
+        loaded_label = None
+        loaded_button = None
+
+        # Find by widget_id to be sure
+        for widget in loaded_screen.content_layout.children:
+            if widget.widget_id == label_widget_id:
+                loaded_label = widget
+            elif widget.widget_id == button_widget_id:
+                loaded_button = widget
+        
+        self.assertIsNotNone(loaded_label, "Label should be reloaded.")
+        self.assertIsInstance(loaded_label, Label)
+        self.assertEqual(loaded_label.text, "Test Label 1")
+
+        self.assertIsNotNone(loaded_button, "Button should be reloaded.")
+        self.assertIsInstance(loaded_button, Button)
+        self.assertEqual(loaded_button.text, "Test Button 1")
+        
+        if App.get_running_app(): App.get_running_app().stop()
+
+    def test_load_empty_file_or_no_file(self):
+        # Case 1: No save file exists (setUp already ensures this)
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app_no_file = MainApp()
+        new_app_no_file.build() # Calls load_screens
+        
+        # Verify app starts normally, with only HomeScreen
+        self.assertEqual(len(new_app_no_file.sm.screens), 1, "Should only have HomeScreen if no save file.")
+        self.assertTrue(new_app_no_file.sm.has_screen('home'), "HomeScreen should exist.")
+        self.assertEqual(new_app_no_file.screen_count, 0, "Screen count should be 0 if no file.")
+        if App.get_running_app(): App.get_running_app().stop()
+
+        # Case 2: Empty save file exists
+        with open(self.save_file, 'w') as f:
+            f.write("") # Create an empty file
+        
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app_empty_file = MainApp()
+        new_app_empty_file.build() # Calls load_screens
+
+        self.assertEqual(len(new_app_empty_file.sm.screens), 1, "Should only have HomeScreen if save file is empty.")
+        self.assertTrue(new_app_empty_file.sm.has_screen('home'), "HomeScreen should exist for empty file case.")
+        self.assertEqual(new_app_empty_file.screen_count, 0, "Screen count should be 0 if save file is empty.")
+        if App.get_running_app(): App.get_running_app().stop()
+
+        # Case 3: Save file with empty JSON array
+        with open(self.save_file, 'w') as f:
+            json.dump([], f)
+        
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app_empty_json = MainApp()
+        new_app_empty_json.build() # Calls load_screens
+
+        self.assertEqual(len(new_app_empty_json.sm.screens), 1, "Should only have HomeScreen if save file has empty JSON array.")
+        self.assertTrue(new_app_empty_json.sm.has_screen('home'), "HomeScreen should exist for empty JSON array.")
+        self.assertEqual(new_app_empty_json.screen_count, 0, "Screen count should be 0 if save file has empty JSON array.")
+        if App.get_running_app(): App.get_running_app().stop()
+
+    def test_screen_count_after_load(self):
+        home_screen = self.app.sm.get_screen('home')
+        
+        # 1. Save a few screens
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_1
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_2
+        self.assertEqual(self.app.screen_count, 2, "App screen_count should be 2 after creating two screens.")
+        self.app.save_screens()
+
+        # 2. Load them into a new app
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app = MainApp()
+        new_app.build() # Calls load_screens
+
+        # 3. Verify self.app.screen_count is correctly set
+        self.assertEqual(new_app.screen_count, 2, "Loaded app's screen_count should be 2.")
+
+        # 4. Create a new screen interactively and check its name
+        loaded_home_screen = new_app.sm.get_screen('home')
+        loaded_home_screen.add_new_screen_interactive(None) 
+        
+        # new_app.screen_count should now be 3
+        self.assertEqual(new_app.screen_count, 3, "Screen_count should be 3 after adding one more screen post-load.")
+        expected_new_screen_name = "DynamicScreen_3"
+        self.assertTrue(new_app.sm.has_screen(expected_new_screen_name), f"{expected_new_screen_name} should be created.")
+        
+        if App.get_running_app(): App.get_running_app().stop()
+
+    # --- Test Case Group: Button Action System ---
+
+    def test_save_load_button_with_navigate_action(self):
+        home_screen = self.app.sm.get_screen('home')
+
+        # 1. Create two dynamic screens
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_1
+        screen1_name = "DynamicScreen_1"
+        screen1 = self.app.sm.get_screen(screen1_name)
+
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_2
+        screen2_name = "DynamicScreen_2"
+        # screen2 = self.app.sm.get_screen(screen2_name) # Not strictly needed for this part
+
+        # 2. On "Screen1", add a button. Configure its action to navigate to "Screen2".
+        # Simulate popup UI interaction for adding the button
+        screen1.widget_text_input = TextInput(text="GoToScreen2")
+        screen1.action_type_spinner = Spinner(text='Navigate to Screen')
+        # Populate target_screen_spinner.values as on_action_type_change would
+        screen1.target_screen_spinner = Spinner(text=screen2_name, values=[s_name for s_name in self.app.sm.screen_names if s_name != screen1_name])
+        screen1.popup_message_input = TextInput(text="") # Not used for navigate
+
+        screen1.add_widget_to_screen('button') # This will read from the mocked popup elements
+
+        self.assertEqual(len(screen1.content_layout.children), 1, "Screen1 should have one button.")
+        button_on_screen1 = screen1.content_layout.children[0]
+        self.assertIsInstance(button_on_screen1, Button)
+        
+        # 3. Ensure the button's action_config is correctly populated.
+        expected_action_config = {'type': 'navigate', 'target': screen2_name}
+        self.assertTrue(hasattr(button_on_screen1, 'action_config'), "Button should have action_config attribute.")
+        self.assertEqual(button_on_screen1.action_config, expected_action_config, "Button action_config is incorrect.")
+
+        # 4. Call self.app.save_screens()
+        self.app.save_screens()
+        self.assertTrue(os.path.exists(self.save_file))
+
+        # 5. Load into a new/reset app
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app = MainApp()
+        new_app.build() # Calls load_screens
+
+        # 6. Retrieve the reloaded button from "Screen1". Verify its action_config.
+        self.assertTrue(new_app.sm.has_screen(screen1_name), f"{screen1_name} should be loaded.")
+        loaded_screen1 = new_app.sm.get_screen(screen1_name)
+        self.assertEqual(len(loaded_screen1.content_layout.children), 1, "Loaded Screen1 should have one button.")
+        
+        loaded_button = loaded_screen1.content_layout.children[0] # Assuming only one widget
+        self.assertIsInstance(loaded_button, Button)
+        self.assertTrue(hasattr(loaded_button, 'action_config'), "Loaded button should have action_config.")
+        self.assertEqual(loaded_button.action_config, expected_action_config, "Loaded button's action_config is incorrect.")
+
+        if App.get_running_app(): App.get_running_app().stop()
+
+    def test_save_load_button_with_popup_action(self):
+        home_screen = self.app.sm.get_screen('home')
+
+        # 1. Create "Screen1"
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_1
+        screen1_name = "DynamicScreen_1"
+        screen1 = self.app.sm.get_screen(screen1_name)
+
+        # 2. Add a button with a "Show Popup Message" action
+        popup_message_text = "Hello from test!"
+        screen1.widget_text_input = TextInput(text="ShowPopup")
+        screen1.action_type_spinner = Spinner(text='Show Popup Message')
+        screen1.target_screen_spinner = Spinner(text='Target Screen', values=[]) # Not used for popup
+        screen1.popup_message_input = TextInput(text=popup_message_text) 
+
+        screen1.add_widget_to_screen('button')
+
+        self.assertEqual(len(screen1.content_layout.children), 1, "Screen1 should have one button.")
+        button_on_screen1 = screen1.content_layout.children[0]
+        
+        expected_action_config = {'type': 'popup', 'message': popup_message_text}
+        self.assertTrue(hasattr(button_on_screen1, 'action_config'))
+        self.assertEqual(button_on_screen1.action_config, expected_action_config)
+
+        # 3. Save and load
+        self.app.save_screens()
+        self.assertTrue(os.path.exists(self.save_file))
+
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app = MainApp()
+        new_app.build()
+
+        # 4. Verify action_config on loaded button
+        self.assertTrue(new_app.sm.has_screen(screen1_name))
+        loaded_screen1 = new_app.sm.get_screen(screen1_name)
+        self.assertEqual(len(loaded_screen1.content_layout.children), 1)
+        
+        loaded_button = loaded_screen1.content_layout.children[0]
+        self.assertTrue(hasattr(loaded_button, 'action_config'))
+        self.assertEqual(loaded_button.action_config, expected_action_config)
+
+        if App.get_running_app(): App.get_running_app().stop()
+
+    def test_execute_navigate_action(self):
+        # 1. Set up two screens in the app's screen manager
+        home_screen = self.app.sm.get_screen('home')
+        
+        # Create "TargetScreen"
+        home_screen.add_new_screen_interactive(None) # Creates DynamicScreen_1
+        target_screen_name = "DynamicScreen_1"
+        
+        # Create "SourceScreen" where the button will be
+        home_screen.add_new_screen_interactive(None) # Creates DynamicScreen_2
+        source_screen_name = "DynamicScreen_2"
+        source_screen = self.app.sm.get_screen(source_screen_name)
+
+        # Ensure we are not on the target screen initially for a clear test
+        self.app.sm.current = source_screen_name 
+        self.assertNotEqual(self.app.sm.current, target_screen_name)
+
+        # 2. Create a button instance and set its action_config
+        # We add it to source_screen's content_layout to make it part of the screen
+        # This also ensures its .manager attribute is set correctly when it's part of a screen.
+        
+        # Simulate popup UI interaction for adding the button
+        source_screen.widget_text_input = TextInput(text="NavigateButton")
+        source_screen.action_type_spinner = Spinner(text='Navigate to Screen')
+        source_screen.target_screen_spinner = Spinner(text=target_screen_name, values=[target_screen_name, 'home']) # Simplified values
+        source_screen.popup_message_input = TextInput(text="")
+
+        source_screen.add_widget_to_screen('button') # Adds the button
+        navigate_button = source_screen.content_layout.children[0] # Get the button
+
+        # 3. Call source_screen.execute_button_action(button_instance)
+        source_screen.execute_button_action(navigate_button)
+
+        # 4. Assert that self.app.sm.current was set to target_screen_name
+        self.assertEqual(self.app.sm.current, target_screen_name, "Should have navigated to TargetScreen.")
+
+    @patch('kivy.uix.popup.Popup.open')
+    def test_execute_popup_action(self, mock_popup_open):
+        # 1. Get a DynamicScreen instance
+        home_screen = self.app.sm.get_screen('home')
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_1
+        screen1_name = "DynamicScreen_1"
+        screen1 = self.app.sm.get_screen(screen1_name)
+
+        # 2. Add a button to it
+        # Simulate popup UI interaction for adding the button
+        screen1.widget_text_input = TextInput(text="PopupButton")
+        screen1.action_type_spinner = Spinner(text='Show Popup Message')
+        screen1.target_screen_spinner = Spinner(text='Target Screen', values=[]) 
+        screen1.popup_message_input = TextInput(text="Test Popup Message")
+
+        screen1.add_widget_to_screen('button') # Adds the button
+        popup_button = screen1.content_layout.children[0] # Get the button
+
+        # 3. Call screen1.execute_button_action(button_instance)
+        screen1.execute_button_action(popup_button)
+
+        # 4. Assert that Popup.open() was called
+        mock_popup_open.assert_called_once()
+
+        # Optional: Verify popup content (more involved, may need to inspect args of mock_popup_open)
+        # For instance, the Popup instance is the first arg to `open` (which is `self` for the method)
+        # We'd need to capture the Popup instance passed to open.
+        # This can be done by `mock_popup_open.call_args[0][0]` to get the Popup instance.
+        # Then check its `title` and `content` widget (e.g., a Label).
+        # However, the current implementation of `execute_button_action` creates a new Popup each time.
+        # So, checking the call is a good start.
+        
+        # To check content, we can inspect the arguments Popup was called with if we also patch Popup.__init__
+        # For now, assert_called_once is the primary check.
+
 
     def test_dynamic_screen_creation(self):
         home_screen = self.app.sm.get_screen('home')
