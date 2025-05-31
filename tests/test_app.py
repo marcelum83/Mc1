@@ -560,6 +560,181 @@ class TestAppFunctionality(unittest.TestCase):
         home_screen.go_to_screen(test_screen_name)
         self.assertEqual(self.app.sm.current, test_screen_name, f"Should navigate to {test_screen_name} from HomeScreen.")
 
+    # --- Test Case Group: Widget Deletion ---
+    def test_widget_deletion_logic(self):
+        home_screen = self.app.sm.get_screen('home')
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_1
+        screen_name = "DynamicScreen_1"
+        dynamic_screen = self.app.sm.get_screen(screen_name)
+
+        # Add a Label
+        dynamic_screen.widget_text_input = TextInput(text="LabelToDelete")
+        dynamic_screen.add_widget_to_screen('label')
+        # Add a Button
+        dynamic_screen.widget_text_input = TextInput(text="ButtonToKeep")
+        dynamic_screen.action_type_spinner = Spinner(text='None')
+        dynamic_screen.add_widget_to_screen('button')
+
+        self.assertEqual(len(dynamic_screen.content_layout.children), 2)
+        # Widgets are in order [ButtonToKeep, LabelToDelete] in content_layout.children
+        label_to_delete_widget_id = dynamic_screen.content_layout.children[1].widget_id
+        button_to_keep_widget_id = dynamic_screen.content_layout.children[0].widget_id
+
+        # Call delete_widget
+        dynamic_screen.delete_widget(label_to_delete_widget_id)
+
+        # Assert widget is removed from layout
+        self.assertEqual(len(dynamic_screen.content_layout.children), 1)
+        remaining_widget = dynamic_screen.content_layout.children[0]
+        self.assertEqual(remaining_widget.widget_id, button_to_keep_widget_id)
+        self.assertIsInstance(remaining_widget, Button)
+
+        # Assert save_screens was effective
+        # delete_widget calls app.save_screens()
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app = MainApp()
+        new_app.build() # This calls load_screens()
+
+        self.assertTrue(new_app.sm.has_screen(screen_name))
+        reloaded_screen = new_app.sm.get_screen(screen_name)
+        self.assertEqual(len(reloaded_screen.content_layout.children), 1)
+        reloaded_remaining_widget = reloaded_screen.content_layout.children[0]
+        self.assertEqual(reloaded_remaining_widget.widget_id, button_to_keep_widget_id)
+        self.assertIsInstance(reloaded_remaining_widget, Button)
+
+        widget_ids_in_reloaded_screen = [w.widget_id for w in reloaded_screen.content_layout.children]
+        self.assertNotIn(label_to_delete_widget_id, widget_ids_in_reloaded_screen)
+
+        if App.get_running_app(): App.get_running_app().stop()
+
+    @patch('kivy.uix.popup.Popup.open')
+    @patch.object(DynamicScreen, 'delete_widget') # Mock the actual deletion for this test
+    def test_widget_deletion_confirmation_popup_interaction(self, mock_delete_widget, mock_popup_open):
+        home_screen = self.app.sm.get_screen('home')
+        home_screen.add_new_screen_interactive(None)
+        screen_name = "DynamicScreen_1"
+        dynamic_screen = self.app.sm.get_screen(screen_name)
+
+        dynamic_screen.widget_text_input = TextInput(text="TestWidget")
+        dynamic_screen.add_widget_to_screen('label')
+        widget_id_to_delete = dynamic_screen.content_layout.children[0].widget_id
+
+        mock_button_instance = Mock()
+        mock_button_instance.widget_id_to_delete = widget_id_to_delete
+
+        # Call confirm_delete_widget
+        dynamic_screen.confirm_delete_widget(mock_button_instance)
+        mock_popup_open.assert_called_once() # Popup should open
+
+        # Simulate "Yes" click by calling _execute_deletion
+        # The lambda in confirm_delete_widget binds to _execute_deletion with (widget_id, popup_instance)
+        # We need to capture the popup instance or pass a mock.
+        # The actual popup instance is created within confirm_delete_widget.
+        # For simplicity, we call _execute_deletion directly as the lambda would.
+        mock_created_popup = Mock() # This mock represents the popup passed to _execute_deletion
+        dynamic_screen._execute_deletion(widget_id_to_delete, mock_created_popup)
+
+        mock_delete_widget.assert_called_once_with(widget_id_to_delete)
+        mock_created_popup.dismiss.assert_called_once()
+
+        # Simulate "No" click (simplified)
+        mock_delete_widget.reset_mock()
+        mock_popup_open.reset_mock()
+        # Call confirm_delete_widget again
+        dynamic_screen.confirm_delete_widget(mock_button_instance)
+        mock_popup_open.assert_called_once()
+        # If "No" is clicked, only popup.dismiss() is called. _execute_deletion is not.
+        # So, delete_widget should not be called again.
+        mock_delete_widget.assert_not_called()
+
+    # --- Test Case Group: Screen Deletion ---
+    def test_screen_deletion_logic(self):
+        home_screen = self.app.sm.get_screen('home')
+
+        # Add two screens
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_1
+        screen_a_name = "DynamicScreen_1"
+        screen_a = self.app.sm.get_screen(screen_a_name)
+
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_2
+        screen_b_name = "DynamicScreen_2"
+        # screen_b = self.app.sm.get_screen(screen_b_name)
+
+        # On ScreenA, add a button that navigates to ScreenB
+        screen_a.widget_text_input = TextInput(text="GoToB")
+        screen_a.action_type_spinner = Spinner(text='Navigate to Screen')
+        screen_a.target_screen_spinner = Spinner(text=screen_b_name, values=[s_name for s_name in self.app.sm.screen_names if s_name != screen_a_name])
+        screen_a.popup_message_input = TextInput(text="")
+        screen_a.add_widget_to_screen('button')
+        nav_button_on_a = screen_a.content_layout.children[0]
+        self.assertEqual(nav_button_on_a.action_config, {'type': 'navigate', 'target': screen_b_name})
+
+        # Call delete_screen for ScreenB
+        home_screen.delete_screen(screen_b_name)
+
+        # Assert ScreenB is gone from ScreenManager
+        self.assertFalse(self.app.sm.has_screen(screen_b_name))
+        self.assertNotIn(screen_b_name, self.app.sm.screen_names)
+
+        # Assert UI entry for ScreenB is removed from HomeScreen's list
+        screen_b_entry_found = False
+        for child_layout in home_screen.screen_list_layout.children:
+            if isinstance(child_layout, BoxLayout): # Each entry is a BoxLayout
+                for widget_in_entry in child_layout.children:
+                    # Check the delete button's screen_name_to_delete or nav button's text
+                    if isinstance(widget_in_entry, Button) and getattr(widget_in_entry, 'screen_name_to_delete', None) == screen_b_name:
+                        screen_b_entry_found = True
+                        break
+            if screen_b_entry_found: break
+        self.assertFalse(screen_b_entry_found, "UI entry for ScreenB should be removed from HomeScreen.")
+
+        # Assert ScreenA's button action_config is cleared
+        self.assertEqual(nav_button_on_a.action_config, {}, "Nav button's action_config should be cleared.")
+
+        # Assert save_screens was effective
+        # delete_screen calls app.save_screens()
+        if App.get_running_app(): App.get_running_app().stop()
+        new_app = MainApp()
+        new_app.build()
+
+        self.assertFalse(new_app.sm.has_screen(screen_b_name), "ScreenB should not exist in reloaded app.")
+        self.assertTrue(new_app.sm.has_screen(screen_a_name))
+        reloaded_screen_a = new_app.sm.get_screen(screen_a_name)
+        self.assertEqual(len(reloaded_screen_a.content_layout.children), 1) # Assuming only nav button was there
+        reloaded_nav_button = reloaded_screen_a.content_layout.children[0]
+        self.assertEqual(reloaded_nav_button.action_config, {}, "Reloaded nav button's action_config should be cleared.")
+
+        if App.get_running_app(): App.get_running_app().stop()
+
+    @patch('kivy.uix.popup.Popup.open')
+    @patch.object(HomeScreen, 'delete_screen') # Mock the actual deletion for this test
+    def test_screen_deletion_confirmation_popup_interaction(self, mock_delete_screen, mock_popup_open):
+        home_screen = self.app.sm.get_screen('home')
+        home_screen.add_new_screen_interactive(None) # DynamicScreen_1
+        screen_name_to_delete = "DynamicScreen_1"
+
+        # Need a mock button instance that would be part of the screen list layout
+        mock_button_instance = Mock()
+        mock_button_instance.screen_name_to_delete = screen_name_to_delete
+
+        # Call confirm_delete_screen
+        home_screen.confirm_delete_screen(mock_button_instance)
+        mock_popup_open.assert_called_once() # Popup should open
+
+        # Simulate "Yes" click by calling _execute_screen_deletion
+        mock_created_popup = Mock()
+        home_screen._execute_screen_deletion(screen_name_to_delete, mock_created_popup)
+
+        mock_delete_screen.assert_called_once_with(screen_name_to_delete)
+        mock_created_popup.dismiss.assert_called_once()
+
+        # Simulate "No" click (simplified)
+        mock_delete_screen.reset_mock()
+        mock_popup_open.reset_mock()
+        home_screen.confirm_delete_screen(mock_button_instance)
+        mock_popup_open.assert_called_once()
+        mock_delete_screen.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

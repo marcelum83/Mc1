@@ -22,6 +22,7 @@ class DynamicScreen(Screen):
         super().__init__(**kwargs)
         self.edit_popup = None 
         self.widget_text_input = None
+        self.popup_widget_list_layout = None
         # For action configuration in popup
         self.action_type_spinner = None
         self.target_screen_spinner = None
@@ -108,6 +109,8 @@ class DynamicScreen(Screen):
 
         if not from_load and app and app.sm and hasattr(app, 'save_screens') and app.sm.has_screen('home'):
              app.save_screens()
+             if self.edit_popup and self.popup_widget_list_layout:
+                 self.refresh_popup_widget_list()
 
     def execute_button_action(self, button_instance):
         if not hasattr(button_instance, 'action_config') or not button_instance.action_config:
@@ -129,6 +132,85 @@ class DynamicScreen(Screen):
                           size_hint=(0.8, 0.4))
             popup.open()
 
+    def refresh_popup_widget_list(self):
+        if not self.edit_popup or not self.popup_widget_list_layout:
+            return
+
+        self.popup_widget_list_layout.clear_widgets()
+        if not self.content_layout.children:
+            self.popup_widget_list_layout.add_widget(Label(text='No widgets on this screen.', size_hint_y=None, height='30dp'))
+            return
+
+        for widget in reversed(self.content_layout.children): # Display in visual order
+            widget_info_layout = BoxLayout(orientation='horizontal', size_hint_y=None, height='30dp', spacing=5, padding=(0,0,5,0))
+
+            widget_type = 'Unknown'
+            if isinstance(widget, Label):
+                widget_type = 'Label'
+            elif isinstance(widget, Button):
+                widget_type = 'Button'
+
+            widget_text_display = getattr(widget, 'text', 'N/A')
+            info_text = f"{widget_type}: {widget_text_display[:20]}" + ('...' if len(widget_text_display) > 20 else '')
+            widget_info_layout.add_widget(Label(text=info_text, size_hint_x=0.8))
+
+            delete_button = Button(text='Delete', size_hint_x=None, width='100dp')
+            delete_button.widget_id_to_delete = getattr(widget, 'widget_id', None)
+            delete_button.bind(on_press=self.confirm_delete_widget)
+            widget_info_layout.add_widget(delete_button)
+
+            self.popup_widget_list_layout.add_widget(widget_info_layout)
+
+    def confirm_delete_widget(self, button_instance):
+        widget_id_to_delete = getattr(button_instance, 'widget_id_to_delete', None)
+        if not widget_id_to_delete:
+            return
+
+        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+        content.add_widget(Label(text='Are you sure you want to delete this widget?'))
+
+        buttons_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint_y=None, height='48dp')
+
+        confirm_btn = Button(text='Yes, Delete')
+        # Note: binding is done after popup creation to pass popup instance
+
+        cancel_btn = Button(text='No, Cancel')
+
+        buttons_layout.add_widget(confirm_btn)
+        buttons_layout.add_widget(cancel_btn)
+        content.add_widget(buttons_layout)
+
+        confirmation_popup = Popup(title='Confirm Deletion',
+                                   content=content,
+                                   size_hint=(0.6, 0.3),
+                                   auto_dismiss=False)
+
+        confirm_btn.bind(on_press=lambda x: self._execute_deletion(widget_id_to_delete, confirmation_popup))
+        cancel_btn.bind(on_press=confirmation_popup.dismiss)
+
+        confirmation_popup.open()
+
+    def _execute_deletion(self, widget_id_to_delete, popup_instance):
+        self.delete_widget(widget_id_to_delete)
+        popup_instance.dismiss()
+
+    def delete_widget(self, widget_id_to_delete):
+        widget_to_remove = None
+        for widget_in_layout in self.content_layout.children:
+            if getattr(widget_in_layout, 'widget_id', None) == widget_id_to_delete:
+                widget_to_remove = widget_in_layout
+                break
+
+        if widget_to_remove:
+            self.content_layout.remove_widget(widget_to_remove)
+            app = App.get_running_app()
+            if app:
+                app.save_screens()
+
+            if self.edit_popup and self.popup_widget_list_layout:
+                self.refresh_popup_widget_list()
+        else:
+            print(f"Widget with ID {widget_id_to_delete} not found for deletion.")
 
     def on_action_type_change(self, spinner_instance, selected_action_type):
         # Ensure these widgets exist in the popup's ids before accessing
@@ -242,12 +324,26 @@ class DynamicScreen(Screen):
         
         popup_main_layout.add_widget(add_widget_main_section)
 
+        # Manage Widgets Section
+        manage_widgets_section = BoxLayout(orientation='vertical', spacing=5, size_hint_y=None, height="150dp")
+        manage_widgets_section.add_widget(Label(text='Manage Widgets', size_hint_y=None, height='30dp'))
+
+        widget_scroll_view = ScrollView(size_hint=(1, 1))
+
+        self.popup_widget_list_layout = GridLayout(cols=1, spacing=5, size_hint_y=None)
+        self.popup_widget_list_layout.bind(minimum_height=self.popup_widget_list_layout.setter('height'))
+        widget_scroll_view.add_widget(self.popup_widget_list_layout)
+
+        manage_widgets_section.add_widget(widget_scroll_view)
+        popup_main_layout.add_widget(manage_widgets_section)
+
         # Section 3: Close Popup Button
         close_button = Button(text='Close Popup', size_hint_y=None, height=40)
         close_button.bind(on_press=lambda x: self.edit_popup.dismiss() if self.edit_popup else None)
         popup_main_layout.add_widget(close_button)
         
         self.on_action_type_change(self.action_type_spinner, self.action_type_spinner.text) # Initial setup of visibility
+        self.refresh_popup_widget_list()
         self.edit_popup.open()
 
     def reset_edit_popup_flag(self, instance):
@@ -256,6 +352,7 @@ class DynamicScreen(Screen):
         self.action_type_spinner = None
         self.target_screen_spinner = None
         self.popup_message_input = None
+        self.popup_widget_list_layout = None
 
 
     def set_screen_background_color(self, color_name=None, rgba=None, from_load=False, *args):
@@ -300,6 +397,77 @@ class HomeScreen(Screen):
         
         self.add_widget(main_layout)
 
+    def _create_screen_entry_widget(self, screen_name):
+        screen_entry_layout = BoxLayout(orientation='horizontal', size_hint_y=None, height='48dp', spacing=10)
+        screen_button = Button(text=screen_name, size_hint_x=0.8) # Navigation button
+        screen_button.bind(on_press=lambda x, name=screen_name: self.go_to_screen(name))
+        screen_entry_layout.add_widget(screen_button)
+        delete_screen_button = Button(text='Delete', size_hint_x=0.2) # Delete button
+        delete_screen_button.screen_name_to_delete = screen_name
+        delete_screen_button.bind(on_press=self.confirm_delete_screen)
+        screen_entry_layout.add_widget(delete_screen_button)
+        return screen_entry_layout
+
+    def confirm_delete_screen(self, button_instance):
+        screen_name_to_delete = getattr(button_instance, 'screen_name_to_delete', None)
+        if not screen_name_to_delete:
+            return
+
+        content = BoxLayout(orientation='vertical', spacing=10, padding=10)
+        message = f"Are you sure you want to delete screen '{screen_name_to_delete}'?\n\nThis may affect buttons on other screens that navigate to it."
+        content.add_widget(Label(text=message))
+
+        buttons_layout = BoxLayout(orientation='horizontal', spacing=10, size_hint_y=None, height='48dp')
+
+        confirm_btn = Button(text='Yes, Delete Screen')
+
+        cancel_btn = Button(text='No, Cancel')
+
+        buttons_layout.add_widget(confirm_btn)
+        buttons_layout.add_widget(cancel_btn)
+        content.add_widget(buttons_layout)
+
+        confirmation_popup = Popup(title='Confirm Screen Deletion',
+                                   content=content,
+                                   size_hint=(0.7, 0.4),
+                                   auto_dismiss=False)
+
+        confirm_btn.bind(on_press=lambda x: self._execute_screen_deletion(screen_name_to_delete, confirmation_popup))
+        cancel_btn.bind(on_press=confirmation_popup.dismiss)
+
+        confirmation_popup.open()
+
+    def _execute_screen_deletion(self, screen_name_to_delete, popup_instance):
+        self.delete_screen(screen_name_to_delete)
+        popup_instance.dismiss()
+
+    def delete_screen(self, screen_name_to_delete):
+        app = App.get_running_app()
+        if not app or not app.sm: return
+
+        if app.sm.has_screen(screen_name_to_delete):
+            screen_instance = app.sm.get_screen(screen_name_to_delete)
+            app.sm.remove_widget(screen_instance)
+
+        layout_to_remove = None
+        for child_layout in self.screen_list_layout.children:
+            if not isinstance(child_layout, BoxLayout): continue
+            for widget_in_entry in child_layout.children:
+                if isinstance(widget_in_entry, Button) and getattr(widget_in_entry, 'screen_name_to_delete', None) == screen_name_to_delete:
+                    layout_to_remove = child_layout
+                    break
+            if layout_to_remove: break
+        if layout_to_remove: self.screen_list_layout.remove_widget(layout_to_remove)
+
+        for screen in app.sm.screens:
+            if isinstance(screen, DynamicScreen):
+                for widget in screen.content_layout.children:
+                    if isinstance(widget, Button) and hasattr(widget, 'action_config'):
+                        action_conf = widget.action_config
+                        if action_conf and action_conf.get('type') == 'navigate' and action_conf.get('target') == screen_name_to_delete:
+                            widget.action_config = {} # Clear or update action
+        app.save_screens()
+
     def add_new_screen_interactive(self, instance):
         app = App.get_running_app()
         app.screen_count += 1
@@ -310,31 +478,34 @@ class HomeScreen(Screen):
 
     def create_and_add_screen(self, screen_name, background_color_rgba=None, widgets_data=None, from_load=True):
         app = App.get_running_app()
-        
-        new_screen = DynamicScreen(name=screen_name)
-        app.sm.add_widget(new_screen)
-        
-        screen_button = Button(text=screen_name, size_hint_y=None, height='48dp')
-        screen_button.bind(on_press=lambda x, name=screen_name: self.go_to_screen(name))
-        self.screen_list_layout.add_widget(screen_button)
+        screen_instance = None
+        if not app.sm.has_screen(screen_name):
+            screen_instance = DynamicScreen(name=screen_name)
+            app.sm.add_widget(screen_instance)
+            if background_color_rgba: screen_instance.set_screen_background_color(rgba=background_color_rgba, from_load=True)
+            if widgets_data:
+                for widget_data in widgets_data:
+                    screen_instance.add_widget_to_screen(
+                        widget_data['type'], widget_text_override=widget_data['text'],
+                        widget_id_override=widget_data.get('widget_id'),
+                        action_config_override=widget_data.get('action_config'), from_load=True)
+        else:
+            screen_instance = app.sm.get_screen(screen_name)
 
-        if background_color_rgba:
-            new_screen.set_screen_background_color(rgba=background_color_rgba, from_load=True)
+        ui_entry_exists = False
+        for layout_entry in self.screen_list_layout.children:
+            if not isinstance(layout_entry, BoxLayout): continue
+            for child_widget in layout_entry.children:
+                if isinstance(child_widget, Button) and child_widget.text == screen_name and child_widget.size_hint_x == 0.8: # Check nav button
+                    ui_entry_exists = True; break
+            if ui_entry_exists: break
         
-        if widgets_data:
-            for widget_data in widgets_data: # Widgets are saved in visual order (top to bottom)
-                new_screen.add_widget_to_screen(
-                    widget_data['type'], 
-                    widget_text_override=widget_data['text'],
-                    widget_id_override=widget_data.get('widget_id'), # Load widget_id
-                    action_config_override=widget_data.get('action_config'), # Load action_config
-                    from_load=True
-                )
+        if not ui_entry_exists:
+            screen_entry_widget = self._create_screen_entry_widget(screen_name)
+            self.screen_list_layout.add_widget(screen_entry_widget)
         
-        if not from_load: 
-            if app and app.sm and hasattr(app, 'save_screens') and app.sm.has_screen('home'):
-                 app.save_screens()
-        return new_screen
+        if not from_load and app and app.sm and hasattr(app, 'save_screens'): app.save_screens()
+        return screen_instance
 
     def go_to_screen(self, screen_name, instance=None): 
         app = App.get_running_app()
@@ -423,30 +594,17 @@ class MainApp(App):
         max_screen_id = 0
         for screen_data in all_screens_data:
             screen_name = screen_data['name']
-            
             try: 
                 screen_id_str = screen_name.split('_')[-1]
                 if screen_id_str.isdigit():
                     screen_id = int(screen_id_str)
-                    if screen_id > max_screen_id:
-                        max_screen_id = screen_id
+                    if screen_id > max_screen_id: max_screen_id = screen_id
             except (ValueError, IndexError):
                  print(f"Warning: Could not parse ID from screen name '{screen_name}' during load.")
 
-            if self.sm.has_screen(screen_name):
-                print(f"Screen {screen_name} already exists, skipping recreation during load.")
-                if not any(btn.text == screen_name for btn in home_screen.screen_list_layout.children if isinstance(btn, Button)):
-                    screen_button = Button(text=screen_name, size_hint_y=None, height='48dp')
-                    screen_button.bind(on_press=lambda x, name=screen_name: home_screen.go_to_screen(name))
-                    home_screen.screen_list_layout.add_widget(screen_button)
-                continue
-
             home_screen.create_and_add_screen(
-                screen_name,
-                background_color_rgba=screen_data.get('background_color_rgba'),
-                widgets_data=screen_data.get('widgets', []), # Pass full widget data
-                from_load=True
-            )
+                screen_name, background_color_rgba=screen_data.get('background_color_rgba'),
+                widgets_data=screen_data.get('widgets', []), from_load=True)
         
         self.screen_count = max_screen_id
 
