@@ -10,6 +10,7 @@ from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
+from kivy.uix.modalview import ModalView # Added ModalView import
 from kivy.clock import Clock
 
 # Import classes from main.py
@@ -734,6 +735,51 @@ class TestAppFunctionality(unittest.TestCase):
         home_screen.confirm_delete_screen(mock_button_instance)
         mock_popup_open.assert_called_once()
         mock_delete_screen.assert_not_called()
+
+    @patch('kivy.uix.popup.Popup.open') # Mock general popup openings if they interfere
+    @patch('main.App.get_running_app') # Mock get_running_app
+    def test_edit_screen_popup_instantiation_and_open(self, mock_get_running_app, mock_popup_open_generic):
+        # Setup a mock app instance that get_running_app will return
+        mock_app_instance = Mock(spec=App)
+        mock_app_instance.sm = self.app.sm
+        mock_app_instance.save_screens = Mock()
+        mock_get_running_app.return_value = mock_app_instance
+
+        home_screen = self.app.sm.get_screen('home')
+        home_screen.add_new_screen_interactive(None)
+        dynamic_screen = self.app.sm.get_screen("DynamicScreen_1")
+        self.assertIsNotNone(dynamic_screen)
+
+        self.assertIsNone(dynamic_screen.edit_popup)
+
+        mock_trigger_button = Mock()
+        try:
+            dynamic_screen.edit_screen_popup(mock_trigger_button)
+        except Exception as e:
+            self.fail(f"edit_screen_popup raised an exception: {e}")
+
+        self.assertIsNotNone(dynamic_screen.edit_popup, "edit_popup was not created.")
+        self.assertIsInstance(dynamic_screen.edit_popup, ModalView, "edit_popup is not a ModalView instance.")
+
+        # Check if specific widgets that are set up in the popup exist
+        self.assertIsNotNone(dynamic_screen.widget_text_input, "widget_text_input should be instantiated by edit_screen_popup.")
+        self.assertIsNotNone(dynamic_screen.action_type_spinner, "action_type_spinner should be instantiated.")
+        self.assertIsNotNone(dynamic_screen.target_screen_spinner, "target_screen_spinner should be instantiated.")
+        self.assertIsNotNone(dynamic_screen.popup_message_input, "popup_message_input should be instantiated.")
+        self.assertIsNotNone(dynamic_screen.popup_widget_list_layout, "popup_widget_list_layout should be instantiated.")
+
+
+        if dynamic_screen.edit_popup:
+            # Manually call dismiss to trigger the on_dismiss binding
+            dynamic_screen.edit_popup.dismiss()
+            # reset_edit_popup_flag should have been called, resetting instance variables
+            self.assertIsNone(dynamic_screen.widget_text_input, "widget_text_input should be None after popup dismiss.")
+            self.assertIsNone(dynamic_screen.action_type_spinner, "action_type_spinner should be None after popup dismiss.")
+            self.assertIsNone(dynamic_screen.target_screen_spinner, "target_screen_spinner should be None after popup dismiss.")
+            self.assertIsNone(dynamic_screen.popup_message_input, "popup_message_input should be None after popup dismiss.")
+            self.assertIsNone(dynamic_screen.popup_widget_list_layout, "popup_widget_list_layout should be None after popup dismiss.")
+            # edit_popup itself is set to None by reset_edit_popup_flag
+            self.assertIsNone(dynamic_screen.edit_popup, "edit_popup should be None after its own dismissal.")
 
 
 if __name__ == '__main__':

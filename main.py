@@ -280,32 +280,17 @@ class DynamicScreen(Screen):
         action_config_layout = BoxLayout(orientation='vertical', spacing=3, size_hint_y=None)
         action_config_layout.add_widget(Label(text='Button Action (Optional)', size_hint_y=None, height=25))
         
-        self.action_type_spinner = Spinner(
-            id='action_type_spinner',
-            text='None', # Default to None
-            values=('None', 'Navigate to Screen', 'Show Popup Message'),
-            size_hint_y=None, height=40
-        )
+        self.action_type_spinner = Spinner(text='None', values=('None', 'Navigate to Screen', 'Show Popup Message'), size_hint_y=None, height=40)
         self.action_type_spinner.bind(text=self.on_action_type_change)
         action_config_layout.add_widget(self.action_type_spinner)
         self.edit_popup.ids['action_type_spinner'] = self.action_type_spinner
 
 
-        self.target_screen_spinner = Spinner(
-            id='target_screen_spinner',
-            text='Target Screen', values=[],
-            size_hint_y=None, height=40,
-            disabled=True, opacity=0 # Initially hidden
-        )
+        self.target_screen_spinner = Spinner(text='Target Screen', values=[], size_hint_y=None, height=40, disabled=True, opacity=0)
         action_config_layout.add_widget(self.target_screen_spinner)
         self.edit_popup.ids['target_screen_spinner'] = self.target_screen_spinner
         
-        self.popup_message_input = TextInput(
-            id='popup_message_input',
-            hint_text='Popup message', multiline=False,
-            size_hint_y=None, height=40,
-            disabled=True, opacity=0 # Initially hidden
-        )
+        self.popup_message_input = TextInput(hint_text='Popup message', multiline=False, size_hint_y=None, height=40, disabled=True, opacity=0)
         action_config_layout.add_widget(self.popup_message_input)
         self.edit_popup.ids['popup_message_input'] = self.popup_message_input
 
